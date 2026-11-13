@@ -1,0 +1,66 @@
+//@version=6
+indicator("Panel Quant: Estocástico + Rango BB ", overlay=false)
+
+// ==========================================
+// 1. PARÁMETROS CONFIGURABLES
+// ==========================================
+// Estocástico
+stoch_len = input.int(14, title="Periodo %K Estocástico", group="1. Estocástico")
+smoothK   = input.int(3, title="Suavizado %K", group="1. Estocástico")
+smoothD   = input.int(3, title="Suavizado %D", group="1. Estocástico")
+
+// Bollinger Bands (Rango de Precio 0-100%)
+bb_len    = input.int(20, title="Periodo Bollinger", group="2. Rango de Precio BB")
+bb_mult   = input.float(2.0, title="Desviación Estándar BB", group="2. Rango de Precio BB")
+
+// Niveles clave
+lvl_upper = input.int(70, title="Umbral Superior Estocástico", group="3. Niveles")
+lvl_lower = input.int(30, title="Umbral Inferior Estocástico", group="3. Niveles")
+
+// ==========================================
+// 2. CÁLCULOS MATEMÁTICOS
+// ==========================================
+// Estocástico
+lowestLow   = ta.lowest(low, stoch_len)
+highestHigh = ta.highest(high, stoch_len)
+rawK        = (highestHigh - lowestLow) != 0 ? ((close - lowestLow) / (highestHigh - lowestLow)) * 100 : 0
+k           = ta.sma(rawK, smoothK)
+d           = ta.sma(k, smoothD)
+
+// Bollinger %B (Rango 0-100%)
+basis   = ta.sma(close, bb_len)
+dev     = bb_mult * ta.stdev(close, bb_len)
+upper   = basis + dev
+lower   = basis - dev
+bb_span = upper - lower
+price_bb_range = bb_span != 0 ? ((close - lower) / bb_span) * 100 : 50
+
+// ==========================================
+// 3. VISUALIZACIÓN UNIFICADA (PANEL INFERIOR)
+// ==========================================
+plot(k, title="%K Estocástico", color=color.red, linewidth=2)
+plot(d, title="%D Estocástico", color=color.gray, linewidth=1)
+plot(price_bb_range, title="Rango BB (0-100%)", color=color.aqua, linewidth=2)
+
+h_upper = hline(lvl_upper, title="Umbral Superior", color=color.white, linestyle=hline.style_solid)
+h_lower = hline(lvl_lower, title="Umbral Inferior", color=color.white, linestyle=hline.style_solid)
+hline(50, title="Línea Media 50", color=color.gray, linestyle=hline.style_dotted)
+hline(100, title="100% (Banda Superior)", color=color.red, linestyle=hline.style_dotted)
+hline(0, title="0% (Banda Inferior)", color=color.green, linestyle=hline.style_dotted)
+
+fill(h_upper, h_lower, color=color.new(color.white, 95), title="Zona Central")
+
+// =====================
+
+
+// ==========================================
+// RANGO BB CON LÍNEA NEUTRA Y RELLENO DINÁMICO
+// ==========================================
+// 1. Dibujamos la línea principal con un color fijo elegante (ej. cian/aqua o blanco tenue)
+plot(price_bb_range, title="Rango BB (0-100%)", color=color.aqua, linewidth=2)
+
+// 2. Creamos una línea invisible en el nivel 50 para usarla como base del relleno
+line_50 = plot(50, title="Base 50", color=na)
+
+// 3. Rellenamos el área: Aqua translúcido si está arriba del 50, Purple si está abajo
+fill(plot(price_bb_range), line_50, color = price_bb_range >= 50 ? color.new(color.aqua, 85) : color.new(color.purple, 85), title="Relleno Dinámico BB")
