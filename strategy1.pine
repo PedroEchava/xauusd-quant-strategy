@@ -1,0 +1,158 @@
+//@version=6
+strategy("Sistema Quant Pro: 15m (Riesgo Fijo $400)", overlay=true, initial_capital=25000, default_qty_type=strategy.cash, default_qty_value=25000, commission_type=strategy.commission.percent, commission_value=0.03, max_boxes_count=500, margin_long=2, margin_short=2)
+
+// ==========================================
+// 1. PARÁMETROS CONFIGURABLES
+// ==========================================
+risk_usd     = input.float(400.0, title="Riesgo Fijo por Operación ($)", group="0. Gestión Monetaria")
+
+ema_len      = input.int(45, title="Periodo EMA (15m)", group="1. Tendencia")
+bb_len       = input.int(20, title="Periodo Bollinger", group="2. Volatilidad")
+bb_mult      = input.float(2.0, title="Desviación Estándar Bollinger", group="2. Volatilidad")
+
+use_vol      = input.bool(false, title="¿Activar Filtro de Volumen (RVOL)?", group="3. Volumen")
+vol_len      = input.int(20, title="Periodo Media Volumen", group="3. Volumen")
+vol_mult     = input.float(1.0, title="Multiplicador RVOL Mínimo", group="3. Volumen")
+
+stoch_len    = input.int(14, title="Periodo %K Estocástico", group="4. Estocástico")
+smoothK      = input.int(3, title="Suavizado %K", group="4. Estocástico")
+smoothD      = input.int(3, title="Suavizado %D", group="4. Estocástico")
+stoch_low    = input.int(30, title="Umbral Sobreventa Long", group="4. Estocástico")
+stoch_high   = input.int(70, title="Umbral Sobrecompra Short", group="4. Estocástico")
+
+atr_len      = input.int(14, title="Periodo ATR", group="5. Gestión de Riesgo (1:1)")
+atr_mult     = input.float(1.5, title="Multiplicador ATR (SL y TP Iguales)", group="5. Gestión de Riesgo (1:1)")
+
+// ==========================================
+// 2. CÁLCULOS MATEMÁTICOS
+// ==========================================
+ema_val = ta.ema(close, ema_len)
+
+basis = ta.sma(close, bb_len)
+dev   = bb_mult * ta.stdev(close, bb_len)
+
+vol_avg     = ta.sma(volume, vol_len)
+rvol        = vol_avg != 0 ? volume / vol_avg : 0
+high_volume = use_vol ? (rvol > vol_mult) : true
+
+lowestLow   = ta.lowest(low, stoch_len)
+highestHigh = ta.highest(high, stoch_len)
+rawK        = (highestHigh - lowestLow) != 0 ? ((close - lowestLow) / (highestHigh - lowestLow)) * 100 : 0
+k           = ta.sma(rawK, smoothK)
+d           = ta.sma(k, smoothD)
+
+atr         = ta.atr(atr_len)
+
+// ==========================================
+// 3. LÓGICA DE CONFLUENCIA
+// ==========================================
+cond_trend_long  = close > ema_val
+cond_vol_long    = high_volume
+cond_bb_long     = close > basis
+cond_stoch_long  = (k < stoch_low) and ta.crossover(k, d)
+long_entry       = cond_trend_long and cond_vol_long and cond_bb_long and cond_stoch_long
+
+cond_trend_short = close < ema_val
+cond_vol_short   = high_volume
+cond_bb_short    = close < basis
+cond_stoch_short = (k > stoch_high) and ta.crossunder(k, d)
+short_entry      = cond_trend_short and cond_vol_short and cond_bb_short and cond_stoch_short
+
+// ==========================================
+// 4. CÁLCULO DE POSICIÓN Y CAJAS SIMÉTRICAS (1:1)
+// ==========================================
+var float entry_price = na
+var float sl_price = na
+var float tp_price = na
+var int entry_bar = na
+
+var box box_loss = na
+var box box_profit = na
+
+sl_distance = atr * atr_mult
+
+// Cálculo exacto en onzas para el simulador de TradingView:
+// Riesgo de $400 / Distancia del SL en dólares = Número exacto de onzas a operar
+position_qty = sl_distance > 0 ? (risk_usd / sl_distance) : 0.01
+position_qty := math.max(0.01, math.round(position_qty, 2))
+
+if (long_entry and strategy.position_size == 0)
+    entry_bar := bar_index
+    entry_price := close
+    sl_price := close - sl_distance
+    tp_price := close + sl_distance
+    
+    strategy.entry("LONG", strategy.long, qty=position_qty)
+    
+    box_loss := box.new(left=entry_bar, top=entry_price, right=bar_index, bottom=sl_price, bgcolor=color.new(color.red, 44), border_color=color.new(color.red,44))
+    box_profit := box.new(left=entry_bar, top=tp_price, right=bar_index, bottom=entry_price, bgcolor=color.new(color.gray, 44), border_color=color.new(color.gray,44))
+
+if (short_entry and strategy.position_size == 0)
+    entry_bar := bar_index
+    entry_price := close
+    sl_price := close + sl_distance
+    tp_price := close - sl_distance
+    
+    strategy.entry("SHORT", strategy.short, qty=position_qty)
+    
+    box_loss := box.new(left=entry_bar, top=sl_price, right=bar_index, bottom=entry_price, bgcolor=color.new(color.red, 44), border_color=color.new(color.red, 44))
+    box_profit := box.new(left=entry_bar, top=entry_price, right=bar_index, bottom=tp_price, bgcolor=color.new(color.gray, 44), border_color=color.new(color.gray,44))
+
+if (strategy.position_size != 0)
+    if not na(box_loss)
+        box.set_right(box_loss, bar_index)
+    if not na(box_profit)
+        box.set_right(box_profit, bar_index)
+
+if (strategy.position_size > 0)
+    strategy.exit("Exit Long", "LONG", stop=sl_price, limit=tp_price)
+
+if (strategy.position_size < 0)
+    strategy.exit("Exit Short", "SHORT", stop=sl_price, limit=tp_price)
+
+// ==========================================
+// 5. PANEL HUD FLOTANTE Y DIBUJOS EN GRÁFICO
+// ==========================================
+var table hud = table.new(position = position.top_right, columns = 2, rows = 3, bgcolor = color.new(color.black, 20), border_color = color.white, border_width = 1)
+
+ema_status = close > ema_val ? "ALCISTA (> EMA)" : "BAJISTA (< EMA)"
+ema_bg     = close > ema_val ? color.green : color.red
+
+bb_status  = close > basis ? "SOBRE MEDIA (BBSup)" : "BAJO MEDIA (BBInf)"
+bb_bg      = close > basis ? color.aqua : color.purple
+
+table.cell(hud, 0, 0, "FILTRO QUANT", text_color=color.white, text_size=size.small, bgcolor=color.blue)
+table.cell(hud, 1, 0, "ESTADO EN VIVO", text_color=color.white, text_size=size.small, bgcolor=color.blue)
+
+table.cell(hud, 0, 1, "EMA 45", text_color=color.white, text_size=size.small)
+table.cell(hud, 1, 1, ema_status, text_color=color.white, text_size=size.small, bgcolor=ema_bg)
+
+table.cell(hud, 0, 2, "Bollinger Basis", text_color=color.white, text_size=size.small)
+table.cell(hud, 1, 2, bb_status, text_color=color.white, text_size=size.small, bgcolor=bb_bg)
+
+// Dibuja la EMA correctamente en el gráfico principal
+plot(ema_val, title="EMA 45", color=color.yellow, linewidth=2)
+
+// ==========================================
+// CÍRCULOS DE VOLUMEN PROPORCIONALES (BURBUJAS)
+// ==========================================
+vol_len_c  = input.int(20, title="Periodo Media Volumen", group="Círculos de Volumen Proporcional")
+
+vol_avg_c     = ta.sma(volume, vol_len_c)
+vol_ratio     = vol_avg_c != 0 ? volume / vol_avg_c : 0
+is_bullish_c  = close >= open
+
+is_high   = vol_ratio >= 1.0 and vol_ratio < 1.3
+is_higher = vol_ratio >= 1.3 and vol_ratio < 1.8
+is_extreme= vol_ratio >= 1.8
+
+c_color = is_bullish_c ? color.green : color.red
+
+plotshape(is_high and is_bullish_c ? low : na, title="Burbuja Alcista Pequeña", style=shape.circle, location=location.belowbar, color=c_color, size=size.tiny)
+plotshape(is_high and not is_bullish_c ? high : na, title="Burbuja Bajista Pequeña", style=shape.circle, location=location.abovebar, color=c_color, size=size.tiny)
+
+plotshape(is_higher and is_bullish_c ? low : na, title="Burbuja Alcista Mediana", style=shape.circle, location=location.belowbar, color=c_color, size=size.small)
+plotshape(is_higher and not is_bullish_c ? high : na, title="Burbuja Bajista Mediana", style=shape.circle, location=location.abovebar, color=c_color, size=size.small)
+
+plotshape(is_extreme and is_bullish_c ? low : na, title="Burbuja Alcista Grande", style=shape.circle, location=location.belowbar, color=c_color, size=size.normal)
+plotshape(is_extreme and not is_bullish_c ? high : na, title="Burbuja Bajista Grande", style=shape.circle, location=location.abovebar, color=c_color, size=size.normal)
